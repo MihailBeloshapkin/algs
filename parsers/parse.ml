@@ -2,6 +2,33 @@ open Base
 open Caml.Format
 open Angstrom
 
+
+type ident = string
+
+type literal =
+  | Int of int
+  | Float of float
+  | String of string
+
+type arg =
+  | Id of ident
+  | Lit of literal
+
+type binop =
+  | Add
+  | Sub
+  | Mul
+  | Div
+
+type exps =
+  | Exp_fun of string * ident list * exps
+  | Exp_letbinding of ident * literal
+  | Exp_literal of literal
+  | Exp_seq of exps list
+  | Exp_apply of ident * arg list  
+  | Exp_unit
+
+
 let is_whitespace = function
   | '\x20' | '\x0a' | '\x0d' | '\x09' -> true
   | _ -> false
@@ -39,9 +66,9 @@ module NumParser = struct
     dot
     >>= function
     | false -> 
-      return (float_of_string (sign ^ whole))
+      return (sign ^ whole)
     | true -> take_while1 is_digit >>= fun part ->
-      return (float_of_string (sign ^ whole ^ "." ^ part))
+      return (sign ^ whole ^ "." ^ part)
 end
 
 module KV = struct
@@ -53,31 +80,6 @@ module KV = struct
     key <* whitespace
     >>= fun k -> value >>= fun v -> return (k, v)
 end
-
-type ident = string
-
-type literal =
-  | Int of int
-  | Float of float
-  | String of string
-
-type arg =
-  | Id of ident
-  | Lit of literal
-
-type binop =
-  | Add
-  | Sub
-  | Mul
-  | Div
-
-type exps =
-  | Exp_fun of string * ident list * exps
-  | Exp_letbinding of ident * literal
-  | Exp_literal of literal
-  | Exp_seq of exps list
-  | Exp_apply of ident * arg list  
-  | Exp_unit
 
 module SimpleLangParser = struct
   let keywords_list = ["let"; "in"]
@@ -102,7 +104,9 @@ module SimpleLangParser = struct
   ;;
 
   module Literals = struct
-    let int_token = take_while1 is_digit |> as_token
+    let int_token = take_while1 is_digit |> as_token >>= fun res -> return @@ Int (int_of_string res)
+
+    let float_token = NumParser.number |> as_token >>= fun res -> return @@ Float (float_of_string res)
   end
 
   module BinOperators = struct
@@ -145,19 +149,26 @@ module SimpleLangParser = struct
 
   let let_constructor name arg_list body =
     match arg_list with
-    | [] -> Exp_letbinding (name, (Int body))
+    | [] -> Exp_letbinding (name, body)
     | _ -> 
       printf "Size: %i" (List.length arg_list);
       List.iter ~f:(printf "\n%s \n") arg_list;
       failwith "error!!!!"
   ;;
 
+  let literals =
+    choice
+    [
+       Literals.float_token
+    ;  Literals.int_token
+    ]
+
   let decl =
     lift3 
       (fun a b c -> let_constructor a b c)
       ((token "let") *> space1 *> new_ident) 
       (many (space1 *> new_ident))
-      (space *> token "=" *> space *> take_while (fun c -> is_digit c ) >>= fun str -> return @@ int_of_string str)
+      (space *> token "=" *> space *> literals <* space <* token "in")
   ;;
 
   let p1 = many (new_ident <* space1)
@@ -167,11 +178,14 @@ module SimpleLangParser = struct
 end
 
 let () =
-  let result = Angstrom.parse_string (SimpleLangParser.decl) ~consume:Angstrom.Consume.All "let num = 10" in 
+  let result = Angstrom.parse_string (SimpleLangParser.decl) ~consume:Angstrom.Consume.All "let num = 10.05 in" in 
   match result with
   | Result.Ok (Exp_letbinding (name, Int value)) -> 
     printf "%s \n" name;
     printf "%i \n" value;
   (*  List.iter ~f:(printf "%s ") il *)
+  | Result.Ok (Exp_letbinding (name, Float value)) -> 
+    printf "%s \n" name;
+    printf "%f \n" value;
   | _ -> printf "SOMETHING WENT WRONG\n"
 ;;
