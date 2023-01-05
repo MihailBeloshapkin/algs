@@ -25,7 +25,7 @@ type exps =
   | Exp_letbinding of ident * literal
   | Exp_literal of literal
   | Exp_seq of exps * exps
-  | Exp_apply of ident * arg list  
+  | Exp_apply of ident * literal list  
   | Exp_unit
 
 
@@ -140,8 +140,6 @@ module SimpleLangParser = struct
 
   let int_number = take_while1 is_digit >>= fun s -> return @@ int_of_string s
 
-  let arithm_parser = 
-    ()
 
   let parse_declaration expr =
     as_token
@@ -178,6 +176,14 @@ module SimpleLangParser = struct
     ; Literals.string_token
     ]
 
+  let arithm_parser = 
+    lift3
+      (fun arg1 operator arg2 -> Exp_apply (operator, [arg1; arg2]))
+      (space *> Literals.int_token <* space)
+      (token "+")
+      (space *> Literals.int_token <* space)
+  ;;
+
   let decl =
     lift3 
       (fun a b c -> let_constructor a b c)
@@ -201,19 +207,26 @@ module Priner = struct
     | (name, String i) -> printf "Name: %s; Val: %s\n" name i
   ;;
 
+  let print_literal = function
+    | Int i -> print_int i
+    | Float f -> print_float f
+    | String s -> print_string s
+  ;;
+
   let rec print_ast = function
     | Exp_letbinding (id, value) -> print_let (id, value)
     | Exp_seq (e1, e2) -> 
       printf "Seq (";
       print_ast e1;
       print_ast e2;
-      printf ")"; 
+      printf ")";
+    | Exp_apply (name, arg_list) -> printf "(Apply: name=%s Args:" name; List.iter ~f:(print_literal) arg_list; printf ")"
     | _ -> printf "Unrecognised Ast Node"
   ;;
 end
 
 let () =
-  let result = Angstrom.parse_string (SimpleLangParser.p) ~consume:Angstrom.Consume.All "let num = \"asdf\" in \nlet mun = 10 in " in 
+  let result = Angstrom.parse_string (SimpleLangParser.arithm_parser) ~consume:Angstrom.Consume.All "2 + 5" in 
   match result with
   | Result.Ok res -> Priner.print_ast res
   (*
