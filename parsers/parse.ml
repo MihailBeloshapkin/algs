@@ -24,7 +24,7 @@ type exps =
   | Exp_fun of string * ident list * exps
   | Exp_letbinding of ident * literal
   | Exp_literal of literal
-  | Exp_seq of exps list
+  | Exp_seq of exps * exps
   | Exp_apply of ident * arg list  
   | Exp_unit
 
@@ -107,6 +107,10 @@ module SimpleLangParser = struct
     let int_token = take_while1 is_digit |> as_token >>= fun res -> return @@ Int (int_of_string res)
 
     let float_token = NumParser.number |> as_token >>= fun res -> return @@ Float (float_of_string res)
+
+    let string_token  = 
+      char '"' *> take_while (fun c -> not (Char.equal c '"')) <* char '"' |> as_token
+      >>= fun res -> return @@ String ("\"" ^ res ^ "\"") 
   end
 
   module BinOperators = struct
@@ -136,6 +140,9 @@ module SimpleLangParser = struct
 
   let int_number = take_while1 is_digit >>= fun s -> return @@ int_of_string s
 
+  let arithm_parser = 
+    ()
+
   let parse_declaration expr =
     as_token
     @@ lift3
@@ -146,6 +153,13 @@ module SimpleLangParser = struct
   ;;
 
   let parse_let e = lift2 (fun (_, i, _) b -> printf "%s" i; i) (parse_declaration e) (token "in" *> space1 *> e)
+
+  let rec link_exps e_list =
+    match e_list with
+    | [ e ] -> e
+    | h :: t -> Exp_seq (h, (link_exps t))
+    | _ -> failwith "empty list"
+  ;;
 
   let let_constructor name arg_list body =
     match arg_list with
@@ -159,8 +173,9 @@ module SimpleLangParser = struct
   let literals =
     choice
     [
-       Literals.float_token
-    ;  Literals.int_token
+      Literals.float_token
+    ; Literals.int_token
+    ; Literals.string_token
     ]
 
   let decl =
@@ -171,21 +186,49 @@ module SimpleLangParser = struct
       (space *> token "=" *> space *> literals <* space <* token "in")
   ;;
 
+  let p = many (decl <* char '\n' <|> decl <* space1) >>= fun res -> return @@ link_exps res
+
   let p1 = many (new_ident <* space1)
 
   let exp_seq_parser = 
     fix (fun expr -> parse_let expr) 
 end
 
+module Priner = struct
+  let print_let = function
+    | (name, Int i) -> printf "Name: %s; Val: %i\n" name i
+    | (name, Float i) -> printf "Name: %s; Val: %f\n" name i
+    | (name, String i) -> printf "Name: %s; Val: %s\n" name i
+  ;;
+
+  let rec print_ast = function
+    | Exp_letbinding (id, value) -> print_let (id, value)
+    | Exp_seq (e1, e2) -> 
+      printf "Seq (";
+      print_ast e1;
+      print_ast e2;
+      printf ")"; 
+    | _ -> printf "Unrecognised Ast Node"
+  ;;
+end
+
 let () =
-  let result = Angstrom.parse_string (SimpleLangParser.decl) ~consume:Angstrom.Consume.All "let num = 10.05 in" in 
+  let result = Angstrom.parse_string (SimpleLangParser.p) ~consume:Angstrom.Consume.All "let num = \"asdf\" in \nlet mun = 10 in " in 
   match result with
-  | Result.Ok (Exp_letbinding (name, Int value)) -> 
+  | Result.Ok res -> Priner.print_ast res
+  (*
+  | Result.Ok [(Exp_letbinding (name, Int value))] -> 
     printf "%s \n" name;
     printf "%i \n" value;
-  (*  List.iter ~f:(printf "%s ") il *)
+  (*  List.iter ~f:(printf "%s ") il 
   | Result.Ok (Exp_letbinding (name, Float value)) -> 
     printf "%s \n" name;
-    printf "%f \n" value;
+    printf "%f \n" value;*)
+  | Result.Ok [(Exp_letbinding (name, String value)); (Exp_letbinding (name1, Int value1))] -> 
+      printf "%s \n" name;
+      printf "%s \n" value;
+  | Result.Ok r -> 
+    List.iter ~f:(fun l -> match l with | Exp_letbinding (name, value) -> Priner.print_let (name, value) | _ -> ()) r;
+    printf "OK: %i" (List.length r)*)
   | _ -> printf "SOMETHING WENT WRONG\n"
 ;;
