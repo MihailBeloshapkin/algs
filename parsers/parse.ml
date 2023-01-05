@@ -22,12 +22,12 @@ type binop =
 
 type exps =
   | Exp_fun of string * ident list * exps
-  | Exp_letbinding of ident * literal
+  | Exp_letbinding of ident * exps
+  | Exp_ident of ident
   | Exp_literal of literal
   | Exp_seq of exps * exps
-  | Exp_apply of ident * literal list  
+  | Exp_apply of ident * exps list  
   | Exp_unit
-
 
 let is_whitespace = function
   | '\x20' | '\x0a' | '\x0d' | '\x09' -> true
@@ -90,7 +90,6 @@ module SimpleLangParser = struct
 
   let as_token p = token_separator *> p <* token_separator
 
-  let token s = as_token (string s)
 
   let is_letter = function
     | 'a'..'z' -> true
@@ -103,14 +102,21 @@ module SimpleLangParser = struct
     | _ -> false
   ;;
 
-  module Literals = struct
-    let int_token = take_while1 is_digit |> as_token >>= fun res -> return @@ Int (int_of_string res)
+    
+  let space = take_while is_whitespace
+  let space1 = take_while1 is_whitespace
+  let token s = space *> string s
 
-    let float_token = NumParser.number |> as_token >>= fun res -> return @@ Float (float_of_string res)
+
+    (* CHANGED!!!!!! *)
+  module Literals = struct
+    let int_token = space *> (take_while1 is_digit) >>= fun res -> return @@ Exp_literal (Int (int_of_string res))
+
+    let float_token = space *> NumParser.number >>= fun res -> return @@ Exp_literal (Float (float_of_string res))
 
     let string_token  = 
-      char '"' *> take_while (fun c -> not (Char.equal c '"')) <* char '"' |> as_token
-      >>= fun res -> return @@ String ("\"" ^ res ^ "\"") 
+      space *> char '"' *> take_while (fun c -> not (Char.equal c '"')) <* char '"'
+      >>= fun res -> return @@ Exp_literal (String ("\"" ^ res ^ "\"")) 
   end
 
   module BinOperators = struct
@@ -123,16 +129,16 @@ module SimpleLangParser = struct
     ;;
   
     let binops = choice [ asoc0_t; asoc1_t; asoc2_t ]
+
+    let ar_operators =
+      choice [ token "+"; token "-"; token "/"; token "*" ]
   end
-  
-  let space = take_while is_whitespace
-  let space1 = take_while1 is_whitespace
-  let token s = space *> string s
 
   let new_ident =
     space
     *> (take_while1 is_letter)
-    >>= fun str -> return str
+    >>= fun str -> 
+      if String.equal str "in" then fail "Keyword in the wrong place of program" else return str
     (* *> lift2
           (fun c oth -> Char.to_string c ^ oth)
           (satisfy is_letter)*)
@@ -154,7 +160,7 @@ module SimpleLangParser = struct
 
   let rec link_exps e_list =
     match e_list with
-    | [ e ] -> e
+    | e :: []  -> e
     | h :: t -> Exp_seq (h, (link_exps t))
     | _ -> failwith "empty list"
   ;;
@@ -176,12 +182,30 @@ module SimpleLangParser = struct
     ; Literals.string_token
     ]
 
-  let arithm_parser = 
+
+
+  let arithm_parser =
+    let c = choice [(new_ident >>= fun res -> return @@ Exp_ident res); literals] in 
     lift3
       (fun arg1 operator arg2 -> Exp_apply (operator, [arg1; arg2]))
-      (space *> Literals.int_token <* space)
-      (token "+")
-      (space *> Literals.int_token <* space)
+      (space *> c <* space)
+      (BinOperators.ar_operators)
+      (space *> c <* space)
+  ;;
+
+  let arg_of_application =
+    choice
+    [
+      (new_ident >>= fun res -> return @@ Exp_ident res)
+    ; Literals.int_token
+    ]
+  
+  let appl =
+    lift2 
+      (fun id li -> 
+        Exp_apply (id, li))
+      (new_ident)
+      ((many (space1 *> arg_of_application)) <* space)
   ;;
 
   let decl =
@@ -189,12 +213,18 @@ module SimpleLangParser = struct
       (fun a b c -> let_constructor a b c)
       ((token "let") *> space1 *> new_ident) 
       (many (space1 *> new_ident))
-      (space *> token "=" *> space *> literals <* space <* token "in")
+      (space *> token "=" *> space *> (choice [arithm_parser; literals; appl]) <* space <* token "in")
   ;;
 
-  let p = many (decl <* char '\n' <|> decl <* space1) >>= fun res -> return @@ link_exps res
+  let base =
+    choice [ arithm_parser; decl; appl ]
 
-  let p1 = many (new_ident <* space1)
+  let p = 
+    many 
+      (base <* char '\n' <|> base <* space1 <|> base) 
+      >>= fun res -> return @@ link_exps res
+
+  let p1 = appl
 
   let exp_seq_parser = 
     fix (fun expr -> parse_let expr) 
@@ -208,25 +238,36 @@ module Priner = struct
   ;;
 
   let print_literal = function
-    | Int i -> print_int i
-    | Float f -> print_float f
-    | String s -> print_string s
+    | Int i -> printf "(Int: %i)" i
+    | Float f -> printf "(Float: %f)" f
+    | String s -> printf "(String: %s)" s
   ;;
 
   let rec print_ast = function
-    | Exp_letbinding (id, value) -> print_let (id, value)
+    | Exp_letbinding (id, value) -> 
+      printf "(LetB: Name=%s value=" id;
+      print_ast value;
+      printf ")"
+    | Exp_literal l -> print_literal l
+    | Exp_ident i -> printf "(Ident: %s)" i
     | Exp_seq (e1, e2) -> 
       printf "Seq (";
       print_ast e1;
       print_ast e2;
       printf ")";
-    | Exp_apply (name, arg_list) -> printf "(Apply: name=%s Args:" name; List.iter ~f:(print_literal) arg_list; printf ")"
+    | Exp_apply (name, arg_list) -> printf "(Apply: name=%s Args:" name; List.iter ~f:(print_ast) arg_list; printf ")"
     | _ -> printf "Unrecognised Ast Node"
   ;;
 end
 
 let () =
-  let result = Angstrom.parse_string (SimpleLangParser.arithm_parser) ~consume:Angstrom.Consume.All "2 + 5" in 
+  let result = 
+    Angstrom.parse_string 
+      (SimpleLangParser.p) 
+      ~consume:Angstrom.Consume.All 
+      "let a = 10 in let b = 20 in a + b"
+      (*"let name = 30 + 1 in \n let eman = 12.5 in \n let s = \"asdf\" in "*) 
+  in 
   match result with
   | Result.Ok res -> Priner.print_ast res
   (*
@@ -243,5 +284,5 @@ let () =
   | Result.Ok r -> 
     List.iter ~f:(fun l -> match l with | Exp_letbinding (name, value) -> Priner.print_let (name, value) | _ -> ()) r;
     printf "OK: %i" (List.length r)*)
-  | _ -> printf "SOMETHING WENT WRONG\n"
+  | Result.Error s -> printf "SOMETHING WENT WRONG: %s\n" s
 ;;
